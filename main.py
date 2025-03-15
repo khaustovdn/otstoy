@@ -1,6 +1,8 @@
 import os
 import sys
 import locale
+import bisect
+import re
 from functools import partial
 from typing import Callable, Optional, List, Tuple
 from PySide6.QtCore import (
@@ -33,14 +35,260 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QPlainTextEdit,
     QVBoxLayout,
+    QHeaderView,
     QWidget,
     QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QFileDialog,
     QMessageBox,
     QToolBar,
     QMenu,
     QMenuBar,
 )
+
+
+class Token:
+    """Represents a lexical token with type, value, and position."""
+
+    def __init__(self, type_: str, value: str, line: int, column: int):
+        self.type = type_
+        self.value = value
+        self.line = line
+        self.column = column
+
+    def __repr__(self):
+        return (f'Token({self.type}, {repr(self.value)}, '
+                f'line={self.line}, column={self.column})')
+
+
+class LexerError:
+    """Represents a lexical error with message and position."""
+
+    def __init__(self, line: int, column: int, message: str):
+        self.line = line
+        self.column = column
+        self.message = message
+
+    def __repr__(self):
+        return (f'LexerError(line={self.line}, column={self.column}, '
+                f'message={self.message})')
+
+
+class Lexer:
+    """Performs lexical analysis and validation based on grammar rules."""
+    TOKEN_REGEX = [
+        (r'const\b', 'CONST'),
+        (r'i32\b', 'I32'),
+        (r':', 'COLON'),
+        (r'=', 'ASSIGN'),
+        (r'\+', 'PLUS'),
+        (r'-', 'MINUS'),
+        (r';', 'SEMICOLON'),
+        (r' ', 'SPACE'),
+        (r'[a-zA-Z][a-zA-Z0-9]*', 'IDENTIFIER'),
+        (r'\d+', 'NUMBER'),
+    ]
+
+    def __init__(self, input_text: str):
+        self.input_text = input_text
+        self.newline_positions = [
+            i for i, c in enumerate(input_text) if c == '\n'
+        ]
+        self.tokens: List[Token] = []
+        self.errors: List[LexerError] = []
+        self.pos = 0
+        self.length = len(input_text)
+
+    def get_line_column(self, pos: int) -> Tuple[int, int]:
+        """Calculate line and column number for a given position."""
+        line_num = bisect.bisect_right(self.newline_positions, pos) + 1
+        if line_num > 1:
+            last_nl_pos = self.newline_positions[line_num - 2]
+            column = pos - last_nl_pos
+        else:
+            column = pos + 1  # Columns are 1-based
+        return line_num, column
+
+    def lex(self) -> Tuple[List[Token], List[LexerError]]:
+        """Tokenize input text and collect lexical errors."""
+        while self.pos < self.length:
+            line, column = self.get_line_column(self.pos)
+            matched = False
+            for pattern, token_type in self.TOKEN_REGEX:
+                regex = re.compile(pattern)
+                match = regex.match(self.input_text, self.pos)
+                if match:
+                    value = match.group(0)
+                    # Ensure keywords are not part of a larger identifier
+                    if token_type in ('CONST', 'I32'):
+                        next_pos = match.end()
+                        if (next_pos < self.length and
+                                self.input_text[next_pos].isalnum()):
+                            continue
+                    self.tokens.append(Token(token_type, value, line, column))
+                    self.pos = match.end()
+                    matched = True
+                    break
+            if not matched:
+                char = self.input_text[self.pos]
+                if char in {'\t', '\r'}:
+                    self.errors.append(LexerError(
+                        line, column,
+                        f"Invalid whitespace character: {repr(char)}"))
+                elif char == '\n':
+                    pass  # Newlines are ignored
+                else:
+                    self.errors.append(LexerError(
+                        line, column, f"Unexpected character: {repr(char)}"))
+                self.pos += 1
+        return self.tokens, self.errors
+
+    def validate_tokens(self) -> List[LexerError]:
+        """Validate token sequence against grammar using a state machine."""
+        current_state = "START"
+        errors: List[LexerError] = []
+        token_index = 0
+
+        while token_index < len(self.tokens):
+            token = self.tokens[token_index]
+
+            if token.type == "CONST" and current_state != "END":
+                current_state = "START"
+
+            if current_state == "START":
+                if token.type == "SPACE":
+                    pass  # Remain in the same state
+                elif token.type == "CONST":
+                    current_state = "SPACEAFTERCONST"
+                else:
+                    errors.append(LexerError(
+                        token.line, token.column,
+                        f"Expected 'const', found '{token.value}'"))
+
+            elif current_state == "SPACEAFTERCONST":
+                if token.type == "SPACE":
+                    current_state = "CONSTIDENTIFIER"
+                else:
+                    errors.append(LexerError(
+                        token.line, token.column,
+                        "Expected space after 'const', "
+                        f"found '{token.value}'"))
+
+            elif current_state == "CONSTIDENTIFIER":
+                if token.type == "SPACE":
+                    pass  # Remain in the same state
+                elif token.type == "IDENTIFIER":
+                    current_state = "CONSTIDENTIFIERREM"
+                else:
+                    errors.append(LexerError(
+                        token.line, token.column,
+                        f"Expected identifier, found '{token.value}'"))
+
+            elif current_state == "CONSTIDENTIFIERREM":
+                if token.type == "IDENTIFIER":
+                    pass  # Remain in the same state
+                elif token.type == "SPACE":
+                    current_state = "BEFORE_COLON"
+                elif token.type == "COLON":
+                    current_state = "DATATYPE"
+                else:
+                    errors.append(LexerError(
+                        token.line, token.column,
+                        "Expected identifier, space, or ':', "
+                        f"found '{token.value}'"))
+
+            elif current_state == "BEFORE_COLON":
+                if token.type == "SPACE":
+                    pass  # Remain in the same state
+                elif token.type == "COLON":
+                    current_state = "DATATYPE"
+                else:
+                    errors.append(LexerError(
+                        token.line, token.column,
+                        f"Expected ':', found '{token.value}'"))
+
+            elif current_state == "DATATYPE":
+                if token.type == "I32":
+                    current_state = "ASSIGNMENT"
+                elif token.type == "SPACE":
+                    pass  # Allow spaces before '='
+                else:
+                    errors.append(LexerError(
+                        token.line, token.column,
+                        f"Expected 'i32', found '{token.value}'"))
+
+            elif current_state == "ASSIGNMENT":
+                if token.type == "SPACE":
+                    pass  # Allow spaces before '='
+                elif token.type == "ASSIGN":
+                    current_state = "VALUE"
+                else:
+                    errors.append(LexerError(
+                        token.line, token.column,
+                        f"Expected '=', found '{token.value}'"))
+
+            elif current_state == "VALUE":
+                if token.type == "SPACE":
+                    pass  # Allow spaces before value
+                elif token.type in {"PLUS", "MINUS"}:
+                    current_state = "WHOLENUMBER"
+                elif token.type == "NUMBER":
+                    current_state = "NUMERICALREM"
+                else:
+                    errors.append(LexerError(
+                        token.line, token.column,
+                        "Expected '+', '-', or number, "
+                        f"found '{token.value}'"))
+
+            elif current_state == "WHOLENUMBER":
+                if token.type == "SPACE":
+                    pass  # Allow spaces before value
+                elif token.type == "NUMBER":
+                    current_state = "NUMERICALREM"
+                else:
+                    errors.append(LexerError(
+                        token.line, token.column,
+                        f"Expected number, found '{token.value}'"))
+
+            elif current_state == "NUMERICALREM":
+                if token.type == "NUMBER":
+                    pass  # Remain in the same state
+                elif token.type == "SPACE":
+                    current_state = "BEFORE_SEMICOLON"
+                elif token.type == "SEMICOLON":
+                    current_state = "END"
+                else:
+                    errors.append(LexerError(
+                        token.line, token.column,
+                        "Expected number, space, or ';', "
+                        f"found '{token.value}'"))
+
+            elif current_state == "BEFORE_SEMICOLON":
+                if token.type == "SPACE":
+                    pass  # Remain in the same state
+                elif token.type == "SEMICOLON":
+                    current_state = "END"
+                else:
+                    errors.append(LexerError(
+                        token.line, token.column,
+                        f"Expected ';', found '{token.value}'"))
+
+            elif current_state == "END":
+                # Reset to START to process new declarations
+                current_state = "START"
+                continue  # Reprocess current token in START state
+
+            token_index += 1
+
+        if current_state != "END":
+            last_token = self.tokens[-1] if self.tokens else None
+            line = last_token.line if last_token else 1
+            column = last_token.column if last_token else 1
+            errors.append(LexerError(
+                line, column, "Unexpected end of input"))
+
+        return errors
 
 
 class SyntaxHighlighter(QSyntaxHighlighter):
@@ -269,11 +517,27 @@ class DocumentWidget(QWidget):
 
         self.input_edit = TextEditor()
         self.highlighter = SyntaxHighlighter(self.input_edit.document())
+
+        self.output_tabs = QTabWidget()
         self.output_edit = QTextEdit()
         self.output_edit.setReadOnly(True)
 
+        self.error_table = QTableWidget()
+        self.error_table.setColumnCount(4)
+        self.error_table.setHorizontalHeaderLabels(
+            ["Line", "Column", "Type", "Message"]
+        )
+        self.error_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers)
+
+        header = self.error_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
+        self.output_tabs.addTab(self.output_edit, "Output")
+        self.output_tabs.addTab(self.error_table, "Errors")
+
         self.main_layout.addWidget(self.input_edit)
-        self.main_layout.addWidget(self.output_edit)
+        self.main_layout.addWidget(self.output_tabs)
         self.input_edit.textChanged.connect(self._handle_text_changed)
 
         self.file_watcher = QFileSystemWatcher()
@@ -816,6 +1080,7 @@ class MainWindow(QMainWindow):
         Create a new document tab.
         """
         self.tab_manager.add_new_tab()
+        self.statusBar().showMessage("New document created", 5000)
 
     def open_document(self) -> None:
         """
@@ -842,12 +1107,21 @@ class MainWindow(QMainWindow):
                         with open(path, "w", encoding="utf-8") as f:
                             pass
                         self.tab_manager.add_new_tab(
-                            file_path=path, content="")
+                            file_path=path, content=""
+                        )
+                        self.statusBar().showMessage(
+                            f"Opened {os.path.basename(path)}",
+                            5000
+                        )
                     except Exception as e:
                         QMessageBox.critical(
                             self,
                             "Error",
                             f"Failed to create file: {str(e)}",
+                        )
+                        self.statusBar().showMessage(
+                            f"Error opening file: {str(e)}",
+                            5000
                         )
                         return
                 else:
@@ -869,6 +1143,8 @@ class MainWindow(QMainWindow):
         """
         Save the current document.
         """
+        self.statusBar().showMessage("Saving...")
+
         if doc := self.tab_manager.get_current_document():
             if doc.model.file_path:
                 if doc.save(doc.model.file_path):
@@ -918,14 +1194,56 @@ class MainWindow(QMainWindow):
         if doc := self.get_current_doc():
             doc.input_edit.insertPlainText(f"{text}\n")
 
+    def _simulate_parsing(self, text: str) -> list:
+        """
+        Simulate parsing and collect errors.
+        """
+        errors = []
+        lines = text.split('\n')
+        for i, line in enumerate(lines, 1):
+            if 'error' in line.lower():
+                errors.append({
+                    'line': i,
+                    'column': line.lower().index('error') + 1,
+                    'type': 'Syntax',
+                    'message': 'Example error detected.'
+                })
+        return errors
+
     def run_parser(self) -> None:
-        """
-        Run the parser on the current document.
-        """
+        self.statusBar().showMessage("Parsing...")
         if doc := self.get_current_doc():
             input_text = doc.input_edit.toPlainText()
-            processed = input_text.upper()
-            doc.output_edit.setPlainText(processed)
+            lexer = Lexer(input_text)
+            tokens, lexer_errors = lexer.lex()
+            automaton_errors = lexer.validate_tokens()
+
+            # Combine lexer and automaton errors
+            errors = lexer_errors + automaton_errors
+
+            # Display errors in the table
+            doc.error_table.setRowCount(0)
+            for row, error in enumerate(errors):
+                doc.error_table.insertRow(row)
+                doc.error_table.setItem(
+                    row, 0, QTableWidgetItem(str(error.line)))
+                doc.error_table.setItem(
+                    row, 1, QTableWidgetItem(str(error.column)))
+                doc.error_table.setItem(
+                    row, 2, QTableWidgetItem("Syntax Error"))
+                doc.error_table.setItem(
+                    row, 3, QTableWidgetItem(error.message))
+
+            # Display tokens in the output
+            output = "Tokens:\n"
+            for token in tokens:
+                output += f"{token.type} ({token.value}) at line {
+                    token.line}, column {token.column}\n"
+            doc.output_edit.setPlainText(output)
+
+            msg = f"Parsing completed with {
+                len(errors)} errors." if errors else "Parsing successful."
+            self.statusBar().showMessage(msg, 5000)
 
     def undo(self) -> None:
         """
