@@ -2,6 +2,7 @@ import os
 import sys
 import locale
 import bisect
+from queue import PriorityQueue
 import re
 from functools import partial
 from typing import Callable, Optional, List, Tuple
@@ -49,34 +50,42 @@ from PySide6.QtWidgets import (
 
 
 class Token:
-    """Represents a lexical token with type, value, and position."""
-
-    def __init__(self, type_: str, value: str, line: int, column: int):
-        self.type = type_
+    def __init__(self, type: str, value: str, line: int, column: int):
+        self.type = type
         self.value = value
         self.line = line
         self.column = column
 
     def __repr__(self):
-        return (f'Token({self.type}, {repr(self.value)}, '
-                f'line={self.line}, column={self.column})')
+        return f"Token({self.type}, {self.value}, {self.line}, {self.column})"
 
 
 class LexerError:
-    """Represents a lexical error with message and position."""
-
     def __init__(self, line: int, column: int, message: str):
         self.line = line
         self.column = column
         self.message = message
 
     def __repr__(self):
-        return (f'LexerError(line={self.line}, column={self.column}, '
-                f'message={self.message})')
+        return f"LexerError({self.line}, {self.column}, {self.message})"
 
 
-class Lexer:
-    """Performs lexical analysis and validation based on grammar rules."""
+class Branch:
+    def __init__(self, tokens: List[Token], index: int,
+                 current_state: str, edit_count: int, changes: List[tuple]):
+        self.tokens = tokens
+        self.index = index
+        self.current_state = current_state
+        self.edit_count = edit_count
+        self.changes = changes
+
+    def __lt__(self, other):
+        return self.edit_count < other.edit_count
+
+
+class AdvancedLexer:
+    MAX_EDIT_COUNT = 15
+
     TOKEN_REGEX = [
         (r'const\b', 'CONST'),
         (r'i32\b', 'I32'),
@@ -85,34 +94,61 @@ class Lexer:
         (r'\+', 'PLUS'),
         (r'-', 'MINUS'),
         (r';', 'SEMICOLON'),
-        (r' ', 'SPACE'),
-        (r'[a-zA-Z][a-zA-Z0-9]*', 'IDENTIFIER'),
+        (r'[a-zA-Z_][a-zA-Z0-9_]*', 'IDENTIFIER'),
         (r'\d+', 'NUMBER'),
+        (r'[^\s]', 'INVALID'),
     ]
+
+    DEFAULT_TOKEN_VALUES = {
+        'CONST': 'const', 'I32': 'i32', 'COLON': ':', 'ASSIGN': '=', 'IDENTIFIER': 'имя переменной',
+        'PLUS': '+', 'MINUS': '-', 'SEMICOLON': ';', 'NUMBER': 'число'
+    }
+
+    TRANSITIONS = {
+        'START': {'CONST': 'CONSTIDENTIFIER'},
+        'CONSTIDENTIFIER': {'IDENTIFIER': 'COLON'},
+        'COLON': {'COLON': 'DATATYPE'},
+        'DATATYPE': {'I32': 'ASSIGNMENT'},
+        'ASSIGNMENT': {'ASSIGN': 'VALUE'},
+        'VALUE': {'NUMBER': 'SEMICOLON', 'MINUS': 'WHOLENUMBER'},
+        'WHOLENUMBER': {'NUMBER': 'SEMICOLON'},
+        'SEMICOLON': {'SEMICOLON': 'END'},
+        'END': {}
+    }
 
     def __init__(self, input_text: str):
         self.input_text = input_text
         self.newline_positions = [
-            i for i, c in enumerate(input_text) if c == '\n'
-        ]
+            i for i, c in enumerate(input_text) if c == '\n']
         self.tokens: List[Token] = []
         self.errors: List[LexerError] = []
         self.pos = 0
         self.length = len(input_text)
 
     def get_line_column(self, pos: int) -> Tuple[int, int]:
-        """Calculate line and column number for a given position."""
         line_num = bisect.bisect_right(self.newline_positions, pos) + 1
         if line_num > 1:
-            last_nl_pos = self.newline_positions[line_num - 2]
-            column = pos - last_nl_pos
+            column = pos - self.newline_positions[line_num-2]
         else:
-            column = pos + 1  # Columns are 1-based
+            column = pos + 1
         return line_num, column
 
+    def create_token(self, token_type: str, reference_token: Token, insert_after: bool = False) -> Token:
+        value = self.DEFAULT_TOKEN_VALUES.get(token_type, '')
+        if reference_token:
+            if insert_after:
+                new_pos = reference_token.column + len(reference_token.value)
+                return Token(token_type, value, reference_token.line, new_pos)
+            else:
+                return Token(token_type, value, reference_token.line, reference_token.column)
+
     def lex(self) -> Tuple[List[Token], List[LexerError]]:
-        """Tokenize input text and collect lexical errors."""
         while self.pos < self.length:
+            while self.pos < self.length and self.input_text[self.pos].isspace():
+                self.pos += 1
+            if self.pos >= self.length:
+                break
+
             line, column = self.get_line_column(self.pos)
             matched = False
             for pattern, token_type in self.TOKEN_REGEX:
@@ -120,7 +156,6 @@ class Lexer:
                 match = regex.match(self.input_text, self.pos)
                 if match:
                     value = match.group(0)
-                    # Ensure keywords are not part of a larger identifier
                     if token_type in ('CONST', 'I32'):
                         next_pos = match.end()
                         if (next_pos < self.length and
@@ -132,162 +167,177 @@ class Lexer:
                     break
             if not matched:
                 char = self.input_text[self.pos]
-                if char in {'\t', '\r'}:
-                    self.errors.append(LexerError(
-                        line, column,
-                        f"Invalid whitespace character: {repr(char)}"))
-                elif char == '\n':
-                    pass  # Newlines are ignored
-                else:
-                    self.errors.append(LexerError(
-                        line, column, f"Unexpected character: {repr(char)}"))
+                self.errors.append(LexerError(
+                    line, column, f"Неожиданный символ: {repr(char)}"))
                 self.pos += 1
         return self.tokens, self.errors
 
-    def validate_tokens(self) -> List[LexerError]:
-        """Validate token sequence against grammar using a state machine."""
-        current_state = "START"
-        errors: List[LexerError] = []
-        token_index = 0
+    def validate_tokens(self) -> Tuple[List[Token], List[LexerError]]:
+        queue = PriorityQueue()
+        queue.put((0, Branch(self.tokens.copy(), 0, 'START', 0, [])))
+        best = None
 
-        while token_index < len(self.tokens):
-            token = self.tokens[token_index]
+        while not queue.empty():
+            _, branch = queue.get()
 
-            if token.type == "CONST" and current_state != "END":
-                current_state = "START"
+            if best and best.edit_count <= self.MAX_EDIT_COUNT:
+                break
 
-            if current_state == "START":
-                if token.type == "SPACE":
-                    pass  # Remain in the same state
-                elif token.type == "CONST":
-                    current_state = "SPACEAFTERCONST"
+            if branch.index >= len(branch.tokens):
+                if branch.current_state in ('END', 'START'):
+                    if not best or branch.edit_count < best.edit_count:
+                        best = branch
                 else:
-                    errors.append(LexerError(
-                        token.line, token.column,
-                        f"Expected 'const', found '{token.value}'"))
+                    self._process_transitions(queue, branch)
 
-            elif current_state == "SPACEAFTERCONST":
-                if token.type == "SPACE":
-                    current_state = "CONSTIDENTIFIER"
+            else:
+                current_token = branch.tokens[branch.index]
+                allowed = self.TRANSITIONS.get(branch.current_state, {}).keys()
+
+                if current_token.type in allowed:
+                    self._handle_valid_transition(queue, branch)
                 else:
-                    errors.append(LexerError(
-                        token.line, token.column,
-                        "Expected space after 'const', "
-                        f"found '{token.value}'"))
+                    self._generate_repair_branches(
+                        queue, branch, current_token, allowed)
 
-            elif current_state == "CONSTIDENTIFIER":
-                if token.type == "SPACE":
-                    pass  # Remain in the same state
-                elif token.type == "IDENTIFIER":
-                    current_state = "CONSTIDENTIFIERREM"
-                else:
-                    errors.append(LexerError(
-                        token.line, token.column,
-                        f"Expected identifier, found '{token.value}'"))
+        return self._finalize_validation(best)
 
-            elif current_state == "CONSTIDENTIFIERREM":
-                if token.type == "IDENTIFIER":
-                    pass  # Remain in the same state
-                elif token.type == "SPACE":
-                    current_state = "BEFORE_COLON"
-                elif token.type == "COLON":
-                    current_state = "DATATYPE"
-                else:
-                    errors.append(LexerError(
-                        token.line, token.column,
-                        "Expected identifier, space, or ':', "
-                        f"found '{token.value}'"))
+    def _process_transitions(self, queue, branch):
+        current_state = branch.current_state
+        allowed = self.TRANSITIONS.get(current_state, {}).keys()
 
-            elif current_state == "BEFORE_COLON":
-                if token.type == "SPACE":
-                    pass  # Remain in the same state
-                elif token.type == "COLON":
-                    current_state = "DATATYPE"
-                else:
-                    errors.append(LexerError(
-                        token.line, token.column,
-                        f"Expected ':', found '{token.value}'"))
+        for insert_type in allowed:
+            if branch.tokens:
+                last_token = branch.tokens[-1]
+                line = last_token.line
+                column = last_token.column + len(last_token.value)
+            else:
+                line = 1
+                column = 1
+            insert_token = Token(
+                insert_type,
+                self.DEFAULT_TOKEN_VALUES.get(insert_type, ''),
+                line,
+                column
+            )
+            new_tokens = branch.tokens.copy()
+            new_tokens.append(insert_token)
+            new_changes = branch.changes.copy()
+            new_changes.append(('insert', len(new_tokens)-1, insert_token))
+            next_state = self.TRANSITIONS[current_state][insert_type]
 
-            elif current_state == "DATATYPE":
-                if token.type == "I32":
-                    current_state = "ASSIGNMENT"
-                elif token.type == "SPACE":
-                    pass  # Allow spaces before '='
-                else:
-                    errors.append(LexerError(
-                        token.line, token.column,
-                        f"Expected 'i32', found '{token.value}'"))
+            if branch.edit_count + 1 <= self.MAX_EDIT_COUNT:
+                new_branch = Branch(
+                    tokens=new_tokens,
+                    index=len(new_tokens),
+                    current_state=next_state,
+                    edit_count=branch.edit_count + 1,
+                    changes=new_changes
+                )
+                queue.put((new_branch.edit_count, new_branch))
 
-            elif current_state == "ASSIGNMENT":
-                if token.type == "SPACE":
-                    pass  # Allow spaces before '='
-                elif token.type == "ASSIGN":
-                    current_state = "VALUE"
-                else:
-                    errors.append(LexerError(
-                        token.line, token.column,
-                        f"Expected '=', found '{token.value}'"))
+    def _handle_valid_transition(self, queue, branch):
+        current_token = branch.tokens[branch.index]
+        next_state = self.TRANSITIONS[branch.current_state][current_token.type]
 
-            elif current_state == "VALUE":
-                if token.type == "SPACE":
-                    pass  # Allow spaces before value
-                elif token.type in {"PLUS", "MINUS"}:
-                    current_state = "WHOLENUMBER"
-                elif token.type == "NUMBER":
-                    current_state = "NUMERICALREM"
-                else:
-                    errors.append(LexerError(
-                        token.line, token.column,
-                        "Expected '+', '-', or number, "
-                        f"found '{token.value}'"))
+        if next_state == 'END':
+            new_edit_count = 0
+        else:
+            new_edit_count = branch.edit_count
 
-            elif current_state == "WHOLENUMBER":
-                if token.type == "SPACE":
-                    pass  # Allow spaces before value
-                elif token.type == "NUMBER":
-                    current_state = "NUMERICALREM"
-                else:
-                    errors.append(LexerError(
-                        token.line, token.column,
-                        f"Expected number, found '{token.value}'"))
+        new_branch = Branch(
+            tokens=branch.tokens,
+            index=branch.index + 1,
+            current_state='START' if next_state == 'END' else next_state,
+            edit_count=new_edit_count,
+            changes=branch.changes.copy()
+        )
+        queue.put((new_branch.edit_count, new_branch))
 
-            elif current_state == "NUMERICALREM":
-                if token.type == "NUMBER":
-                    pass  # Remain in the same state
-                elif token.type == "SPACE":
-                    current_state = "BEFORE_SEMICOLON"
-                elif token.type == "SEMICOLON":
-                    current_state = "END"
-                else:
-                    errors.append(LexerError(
-                        token.line, token.column,
-                        "Expected number, space, or ';', "
-                        f"found '{token.value}'"))
+    def _generate_repair_branches(self, queue, branch, current_token, allowed):
+        self._generate_delete_branch(queue, branch, current_token)
+        self._generate_replace_branches(queue, branch, current_token, allowed)
+        self._generate_insert_branches(queue, branch, current_token, allowed)
 
-            elif current_state == "BEFORE_SEMICOLON":
-                if token.type == "SPACE":
-                    pass  # Remain in the same state
-                elif token.type == "SEMICOLON":
-                    current_state = "END"
-                else:
-                    errors.append(LexerError(
-                        token.line, token.column,
-                        f"Expected ';', found '{token.value}'"))
+    def _generate_delete_branch(self, queue, branch, current_token):
+        new_tokens = branch.tokens.copy()
+        del new_tokens[branch.index]
+        new_changes = branch.changes.copy()
+        new_changes.append(('delete', branch.index, current_token))
+        if branch.edit_count + 1 <= self.MAX_EDIT_COUNT:
+            new_branch = Branch(
+                tokens=new_tokens,
+                index=branch.index,
+                current_state=branch.current_state,
+                edit_count=branch.edit_count + 1,
+                changes=new_changes
+            )
+            queue.put((new_branch.edit_count, new_branch))
 
-            elif current_state == "END":
-                # Reset to START to process new declarations
-                current_state = "START"
-                continue  # Reprocess current token in START state
+    def _generate_replace_branches(self, queue, branch, current_token, allowed):
+        current_state = branch.current_state
+        for replace_type in allowed:
+            new_token = self.create_token(replace_type, current_token)
+            new_tokens = branch.tokens.copy()
+            new_tokens[branch.index] = new_token
+            new_changes = branch.changes.copy()
+            new_changes.append(
+                ('replace', branch.index, current_token, new_token))
+            next_state = self.TRANSITIONS[current_state][replace_type]
+            if branch.edit_count + 1 <= self.MAX_EDIT_COUNT:
+                new_branch = Branch(
+                    tokens=new_tokens,
+                    index=branch.index + 1,
+                    current_state=next_state,
+                    edit_count=branch.edit_count + 1,
+                    changes=new_changes
+                )
+                queue.put((new_branch.edit_count, new_branch))
 
-            token_index += 1
+    def _generate_insert_branches(self, queue, branch, current_token, allowed):
+        current_state = branch.current_state
+        for insert_type in allowed:
+            insert_token = self.create_token(
+                insert_type, current_token, insert_after=False)
+            new_tokens = branch.tokens.copy()
+            new_tokens.insert(branch.index, insert_token)
+            new_changes = branch.changes.copy()
+            new_changes.append(('insert', branch.index, insert_token))
+            next_state = self.TRANSITIONS[current_state][insert_type]
+            if branch.edit_count + 1 <= self.MAX_EDIT_COUNT:
+                new_branch = Branch(
+                    tokens=new_tokens,
+                    index=branch.index + 1,
+                    current_state=next_state,
+                    edit_count=branch.edit_count + 1,
+                    changes=new_changes
+                )
+                queue.put((new_branch.edit_count, new_branch))
 
-        if current_state != "END":
-            last_token = self.tokens[-1] if self.tokens else None
-            line = last_token.line if last_token else 1
-            column = last_token.column if last_token else 1
-            errors.append(LexerError(
-                line, column, "Unexpected end of input"))
+    def _finalize_validation(self, best):
+        if best:
+            self.tokens = best.tokens
+            errors = self._generate_errors_from_changes(best.changes)
+            return self.tokens, errors
+        else:
+            return self.tokens, self.errors + [LexerError(0, 0, f"Проверка не удалась: превышен максимальный лимит правок ({self.MAX_EDIT_COUNT})")]
 
+    def _generate_errors_from_changes(self, changes: List[tuple]) -> List[LexerError]:
+        errors = []
+        for change in changes:
+            action = change[0]
+            if action == 'delete':
+                _, pos, token = change
+                errors.append(LexerError(token.line, token.column,
+                              f"Удалить неожиданный токен '{token.value}'"))
+            elif action == 'replace':
+                _, pos, old_token, new_token = change
+                errors.append(LexerError(old_token.line, old_token.column,
+                                         f"Заменить '{old_token.value}' на '{new_token.value}'"))
+            elif action == 'insert':
+                _, pos, token = change
+                errors.append(LexerError(token.line, token.column,
+                              f"Вставить отсутствующий токен '{token.value}'"))
         return errors
 
 
@@ -1214,16 +1264,17 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Parsing...")
         if doc := self.get_current_doc():
             input_text = doc.input_edit.toPlainText()
-            lexer = Lexer(input_text)
-            tokens, lexer_errors = lexer.lex()
-            automaton_errors = lexer.validate_tokens()
 
-            # Combine lexer and automaton errors
-            errors = lexer_errors + automaton_errors
+            lexer = AdvancedLexer(input_text)
 
-            # Display errors in the table
+            raw_tokens, lexer_errors = lexer.lex()
+
+            valid_tokens, validation_errors = lexer.validate_tokens()
+
+            all_errors = lexer_errors + validation_errors
+
             doc.error_table.setRowCount(0)
-            for row, error in enumerate(errors):
+            for row, error in enumerate(all_errors):
                 doc.error_table.insertRow(row)
                 doc.error_table.setItem(
                     row, 0, QTableWidgetItem(str(error.line)))
@@ -1234,15 +1285,20 @@ class MainWindow(QMainWindow):
                 doc.error_table.setItem(
                     row, 3, QTableWidgetItem(error.message))
 
-            # Display tokens in the output
             output = "Tokens:\n"
-            for token in tokens:
-                output += f"{token.type} ({token.value}) at line {
-                    token.line}, column {token.column}\n"
+            for token in valid_tokens:
+                output += (
+                    f"{token.type} ({token.value}) "
+                    f"at line {token.line}, column {token.column}\n"
+                )
             doc.output_edit.setPlainText(output)
 
-            msg = f"Parsing completed with {
-                len(errors)} errors." if errors else "Parsing successful."
+            msg = (
+                f"Parsing completed with {len(all_errors)} issues. "
+                f"Applied {len(validation_errors)} corrections."
+                if all_errors
+                else "Parsing successful"
+            )
             self.statusBar().showMessage(msg, 5000)
 
     def undo(self) -> None:
