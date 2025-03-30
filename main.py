@@ -27,6 +27,7 @@ from PySide6.QtGui import (
     QColor,
     QAction,
     QPainter,
+    QPalette,
     QShortcut,
     QKeySequence,
     QTextCharFormat,
@@ -49,6 +50,239 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QTableWidgetItem,
 )
+
+
+class DarkTheme:
+    """Catppuccin Mocha dark theme with comprehensive styling."""
+
+    _CATPPUCCIN_PALETTE = {
+        "base": "#1e1e2e",
+        "text": "#cdd6f4",
+        "disabled_text": "#6c7086",
+        "highlight": "#89b4fa",
+        "highlight_text": "#1e1e2e",
+        "alternate_base": "#313244",
+        "tooltip_base": "#585b70",
+        "button": "#313244",
+        "button_text": "#cdd6f4",
+        "bright_text": "#f38ba8",
+        "surface1": "#45475a",
+        "overlay0": "#6c7086",
+        "syntax_keyword": "#f38ba8",
+        "syntax_type": "#89b4fa",
+        "syntax_string": "#94e2d5",
+        "syntax_comment": "#6c7086",
+        "syntax_number": "#fab387",
+        "syntax_function": "#f5c2e7",
+        "current_line": "#313244",
+        "graph_colors": [
+            "#b4befe", "#f5c2e7", "#74c7ec",
+            "#94e2d5", "#fab387", "#f9e2af"
+        ]
+    }
+
+    _BASE_FONT_SIZE = 14
+    _TABLET_FONT_SIZE = 16
+    _TABLET_DIAGONAL_INCH = 9
+
+    @classmethod
+    def get_color(cls, color_name: str) -> str:
+        return cls._CATPPUCCIN_PALETTE.get(color_name, "#000000")
+
+    @classmethod
+    def apply_theme(cls, app: QApplication) -> None:
+        palette = app.palette()
+        colors = cls._CATPPUCCIN_PALETTE
+
+        role_mappings = {
+            QPalette.ColorRole.Window: colors["base"],
+            QPalette.ColorRole.WindowText: colors["text"],
+            QPalette.ColorRole.Base: colors["base"],
+            QPalette.ColorRole.AlternateBase: colors["alternate_base"],
+            QPalette.ColorRole.ToolTipBase: colors["tooltip_base"],
+            QPalette.ColorRole.ToolTipText: colors["text"],
+            QPalette.ColorRole.Text: colors["text"],
+            QPalette.ColorRole.Button: colors["button"],
+            QPalette.ColorRole.ButtonText: colors["button_text"],
+            QPalette.ColorRole.BrightText: colors["bright_text"],
+            QPalette.ColorRole.Highlight: colors["highlight"],
+            QPalette.ColorRole.HighlightedText: colors["highlight_text"],
+        }
+
+        for role, color in role_mappings.items():
+            palette.setColor(role, QColor(color))
+
+        app.setPalette(palette)
+        cls._apply_stylesheet(app)
+        cls.apply_adaptive_styles(app)
+
+    @classmethod
+    def _apply_stylesheet(cls, app: QApplication) -> None:
+        colors = cls._CATPPUCCIN_PALETTE
+        stylesheet = f"""
+            /* Global Styles */
+            QWidget {{
+                font-family: "Inter", "Segoe UI", system-ui;
+                font-size: {cls._BASE_FONT_SIZE}px;
+                color: {colors['text']};
+                background: {colors['base']};
+            }}
+
+            /* Text Editors */
+            QTextEdit, QPlainTextEdit {{
+                background: {colors['alternate_base']};
+                border: 1px solid {colors['surface1']};
+                padding: 8px;
+                selection-background-color: {colors['highlight']};
+            }}
+            QTextEdit:focus, QPlainTextEdit:focus {{
+                border-color: {colors['highlight']};
+            }}
+
+            /* Buttons */
+            QPushButton {{
+                background: {colors['button']};
+                color: {colors['button_text']};
+                border: 1px solid {colors['surface1']};
+                padding: 6px 12px;
+            }}
+            QPushButton:hover {{
+                background: {colors['surface1']};
+                border-color: {colors['overlay0']};
+            }}
+            QPushButton:pressed {{
+                background: {colors['overlay0']};
+            }}
+            QPushButton:disabled {{
+                background: {colors['button']};
+                color: {colors['disabled_text']};
+                border-color: {colors['surface1']};
+            }}
+
+            /* Tabs */
+            QTabWidget::pane {{
+                border: 1px solid {colors['surface1']};
+                margin-top: 4px;
+                background: {colors['alternate_base']};
+            }}
+            QTabBar::tab {{
+                background: {colors['button']};
+                color: {colors['text']};
+                padding: 8px 16px;
+                margin-right: 4px;
+                font-size: {cls._BASE_FONT_SIZE - 1}px;
+            }}
+            QTabBar::tab:selected {{
+                background: {colors['highlight']};
+                color: {colors['highlight_text']};
+            }}
+            QTabBar::tab:hover {{
+                background: {colors['surface1']};
+            }}
+
+            /* Tables - Fixed rounded corners */
+            QTableWidget {{
+                background: {colors['button']};
+                border: 1px solid {colors['surface1']};
+                gridline-color: {colors['surface1']};
+            }}
+            QTableCornerButton::section {{
+                background: {colors['button']};
+                border: 1px solid {colors['surface1']};
+            }}
+            QHeaderView {{
+                background: {colors['button']};
+            }}
+            QHeaderView::section {{
+                background: {colors['button']};
+                padding: 4px;
+                border: 1px solid {colors['surface1']};
+            }}
+            QTableWidget::item {{
+                padding: 4px;
+            }}
+
+            /* Menus & Toolbars - Fixed hover highlighting */
+            QMenuBar {{
+                background: {colors['base']};
+                spacing: 4px;
+            }}
+            QMenuBar::item {{
+                padding: 6px 12px;
+                background: transparent;
+            }}
+            QMenuBar::item:selected {{
+                background: {colors['surface1']};
+            }}
+            QMenuBar::item:pressed {{
+                background: {colors['overlay0']};
+            }}
+            QMenu {{
+                border: 1px solid {colors['surface1']};
+                padding: 4px;
+                background: {colors['base']};
+                margin: 2px; /* Add some margin for the drop shadow */
+            }}
+            QMenu::item {{
+                padding: 8px 16px;
+                background-color: transparent;
+            }}
+            QMenu::icon {{
+                padding: 8px;
+            }}
+            QMenu::item:selected {{
+                background: {colors['highlight']};
+                color: {colors['highlight_text']};
+            }}
+            QToolBar {{
+                border-bottom: 1px solid {colors['surface1']};
+                padding: 2px;
+                spacing: 4px;
+                background: {colors['base']};
+            }}
+            QToolButton {{
+                background: transparent;
+                border: 1px solid transparent;
+                padding: 4px;
+            }}
+            QToolButton:hover {{
+                background: {colors['surface1']};
+                border-color: {colors['surface1']};
+            }}
+            QToolButton:pressed {{
+                background: {colors['overlay0']};
+            }}
+
+            /* Scrollbars */
+            QScrollBar:vertical {{ width: 12px; }}
+            QScrollBar:horizontal {{ height: 12px; }}
+            QScrollBar::handle {{
+                background: {colors['surface1']};
+                margin: 2px;
+            }}
+            QScrollBar::handle:hover {{
+                background: {colors['overlay0']};
+            }}
+        """
+        app.setStyleSheet(stylesheet)
+
+    @classmethod
+    def apply_adaptive_styles(cls, app: QApplication) -> None:
+        if cls.is_tablet_device(app):
+            app.setStyleSheet(app.styleSheet() + f"""
+                QWidget {{ font-size: {cls._TABLET_FONT_SIZE}px; }}
+                QTabBar::tab {{ padding: 8px 16px; }}
+            """)
+
+    @staticmethod
+    def is_tablet_device(app: QApplication) -> bool:
+        screen = app.primaryScreen()
+        diag = (screen.size().width()**2 + screen.size().height()**2)**0.5
+        return (
+            diag / screen.logicalDotsPerInch()
+            <=
+            DarkTheme._TABLET_DIAGONAL_INCH
+        )
 
 
 class Token:
@@ -113,8 +347,8 @@ class AdvancedLexer:
         (r'\+', 'PLUS'),
         (r'-', 'MINUS'),
         (r';', 'SEMICOLON'),
-        (r'[a-zA-Z_][a-zA-Z0-9_]*', 'IDENTIFIER'),
-        (r'\d+', 'NUMBER'),
+        (r'[a-zA-Z_][^ \t\n\r:;=+]*', 'IDENTIFIER'),
+        (r'\d[^ \t\n\r:;=+]*', 'NUMBER'),
         (r'[^\s]', 'INVALID'),
     ]
 
@@ -137,101 +371,184 @@ class AdvancedLexer:
         'END': {}
     }
 
+    KEYWORDS = {'const', 'i32'}
+    KEYWORD_TO_TOKEN = {'const': 'CONST', 'i32': 'I32'}
+    KEYWORD_TOLERANCE = 2
+
     def __init__(self, input_text: str):
         self.input_text = input_text
         self.newline_positions = [
-            i for i, c in enumerate(input_text) if c == '\n'
-        ]
+            i for i, c in enumerate(input_text) if c == '\n']
         self.tokens = []
         self.errors = []
         self.pos = 0
         self.length = len(input_text)
 
-    def get_line_column(
-        self,
-        pos: int
-    ) -> Tuple[int, int]:
-        line_num = bisect.bisect_right(
-            self.newline_positions,
-            pos
-        ) + 1
+    def get_line_column(self, pos: int) -> Tuple[int, int]:
+        line_num = bisect.bisect_right(self.newline_positions, pos) + 1
         if line_num > 1:
-            column = pos - self.newline_positions[line_num-2]
+            column = pos - self.newline_positions[line_num - 2]
         else:
             column = pos + 1
         return line_num, column
 
-    def create_token(
-        self,
-        token_type: str,
-        reference_token: Token,
-        insert_after: bool = False
-    ) -> Token:
-        value = self.DEFAULT_TOKEN_VALUES.get(
-            token_type,
-            token_type
-        )
+    def create_token(self, token_type: str, reference_token: 'Token', insert_after: bool = False) -> 'Token':
+        value = self.DEFAULT_TOKEN_VALUES.get(token_type, token_type)
         if reference_token:
             if insert_after:
                 new_pos = reference_token.column + len(reference_token.value)
-                return Token(
-                    token_type,
-                    value,
-                    reference_token.line,
-                    new_pos
-                )
-            return Token(
-                token_type,
-                value,
-                reference_token.line,
-                reference_token.column
-            )
+                return Token(token_type, value, reference_token.line, new_pos)
+            return Token(token_type, value, reference_token.line, reference_token.column)
+
+    def _is_keyword_candidate(self, value: str) -> bool:
+        value_lower = value.lower()
+        for keyword in self.KEYWORDS:
+            if len(value) < len(keyword) - self.KEYWORD_TOLERANCE:
+                continue
+            if self._fuzzy_match(value_lower, keyword):
+                return True
+        return False
+
+    def _fuzzy_match(self, s: str, target: str) -> bool:
+        if not s or not target:
+            return False
+        if s[0] != target[0]:
+            return False
+        max_length = max(len(s), len(target))
+        matches = 0
+        s_idx, t_idx = 0, 0
+        while s_idx < len(s) and t_idx < len(target):
+            if s[s_idx] == target[t_idx]:
+                matches += 1
+                s_idx += 1
+                t_idx += 1
+            else:
+                t_idx += 1
+        return matches / len(target) >= 0.6
+
+    def _correct_keyword(self, value: str) -> str:
+        value_lower = value.lower()
+        for keyword in self.KEYWORDS:
+            if self._fuzzy_match(value_lower, keyword):
+                return keyword
+        return None
 
     def lex(self) -> Tuple[List[Token], List[LexerError]]:
         while self.pos < self.length:
-            while (
-                self.pos < self.length
-                and self.input_text[self.pos].isspace()
-            ):
+            while self.pos < self.length and self.input_text[self.pos].isspace():
                 self.pos += 1
             if self.pos >= self.length:
                 break
 
             line, column = self.get_line_column(self.pos)
             matched = False
+
             for pattern, token_type in self.TOKEN_REGEX:
                 regex = re.compile(pattern)
                 match = regex.match(self.input_text, self.pos)
                 if match:
                     value = match.group(0)
-                    if token_type in ('CONST', 'I32'):
-                        next_pos = match.end()
-                        if (
-                            next_pos < self.length
-                            and self.input_text[next_pos].isalnum()
-                        ):
-                            continue
-                    self.tokens.append(
-                        Token(
-                            token_type,
-                            value,
-                            line,
-                            column
-                        )
-                    )
+                    start_pos = self.pos
                     self.pos = match.end()
-                    matched = True
-                    break
+
+                    if token_type == 'IDENTIFIER':
+                        original = value
+                        valid_chars = []
+                        has_errors = False
+
+                        if not (original[0].isalpha() or original[0] == '_'):
+                            self.errors.append(LexerError(
+                                line, column,
+                                f"Недопустимый первый символ идентификатора: {
+                                    original[0]}"
+                            ))
+                            has_errors = True
+                        else:
+                            valid_chars.append(original[0])
+
+                        for i in range(1, len(original)):
+                            c = original[i]
+                            if c.isalnum() or c == '_':
+                                valid_chars.append(c)
+                            else:
+                                err_pos = start_pos + i
+                                line_err, column_err = self.get_line_column(
+                                    err_pos)
+                                """
+                                self.errors.append(LexerError(
+                                    line_err, column_err,
+                                    f"Недопустимый символ в идентификаторе: {
+                                        repr(c)}"
+                                ))
+                                """
+                                has_errors = True
+
+                        valid_value = ''.join(valid_chars) or '_'
+                        if valid_value in self.KEYWORDS:
+                            keyword_token_type = self.KEYWORD_TO_TOKEN[valid_value]
+                            self.tokens.append(
+                                Token(keyword_token_type, valid_value, line, column))
+                            if has_errors:
+                                self.errors.append(LexerError(
+                                    line, column,
+                                    f"Исправлено '{original}' на '{
+                                        valid_value}'"
+                                ))
+                        else:
+                            self.tokens.append(
+                                Token('IDENTIFIER', valid_value, line, column))
+                            if has_errors:
+                                self.errors.append(LexerError(
+                                    line, column,
+                                    f"Исправлен идентификатор: '{
+                                        original}' -> '{valid_value}'"
+                                ))
+                        matched = True
+                        break
+
+                    elif token_type == 'NUMBER':
+                        original = value
+                        cleaned = []
+                        has_errors = False
+                        for i, c in enumerate(original):
+                            if c.isdigit():
+                                cleaned.append(c)
+                            else:
+                                err_pos = start_pos + i
+                                line_err, column_err = self.get_line_column(
+                                    err_pos)
+                                """
+                                self.errors.append(LexerError(
+                                    line_err, column_err,
+                                    f"Недопустимый символ в числе: {repr(c)}"
+                                ))
+                                """
+                                has_errors = True
+
+                        valid_value = ''.join(cleaned) or '0'
+                        self.tokens.append(
+                            Token('NUMBER', valid_value, line, column))
+                        if has_errors:
+                            self.errors.append(LexerError(
+                                line, column,
+                                f"Исправлено число: '{
+                                    original}' -> '{valid_value}'"
+                            ))
+                        matched = True
+                        break
+
+                    else:
+                        self.tokens.append(
+                            Token(token_type, value, line, column))
+                        matched = True
+                        break
+
             if not matched:
                 char = self.input_text[self.pos]
-                self.errors.append(
-                    LexerError(
-                        line,
-                        column,
-                        f"Неожиданный символ: {repr(char)}"
-                    )
-                )
+                self.errors.append(LexerError(
+                    line, column, f"Необрабатываемый символ: {repr(char)}"))
                 self.pos += 1
+
         return self.tokens, self.errors
 
     def validate_tokens(self) -> Tuple[List[Token], List[LexerError]]:
@@ -494,17 +811,23 @@ class SyntaxHighlighter(QSyntaxHighlighter):
              "continue", "function", "class", "try", "catch", "finally",
              "var", "let", "const", "new", "this", "super", "import",
              "export", "default", "async", "await", "true", "false", "null"],
-            QColor(207, 106, 76), bold=True
+            QColor(
+                DarkTheme.get_color("syntax_keyword")
+            ),
+            bold=True
         )
         self._add_rule(
             ["number", "string", "boolean", "object", "array", "void",
              "any", "undefined", "symbol", "never", "type", "interface"],
-            QColor(103, 140, 177), italic=True
+            QColor(
+                DarkTheme.get_color("syntax_type")
+            ),
+            italic=True
         )
-        self._add_string_rule(QColor(120, 153, 34))
-        self._add_comment_rule(QColor(112, 128, 144))
-        self._add_number_rule(QColor(152, 118, 170))
-        self._add_function_rule(QColor(200, 80, 140))
+        self._add_string_rule(QColor(DarkTheme.get_color("syntax_string")))
+        self._add_comment_rule(QColor(DarkTheme.get_color("syntax_comment")))
+        self._add_number_rule(QColor(DarkTheme.get_color("syntax_number")))
+        self._add_function_rule(QColor(DarkTheme.get_color("syntax_function")))
 
     def _add_rule(self, keywords, color, bold=False, italic=False):
         fmt = QTextCharFormat()
@@ -590,8 +913,12 @@ class LineNumberArea(QWidget):
     def __init__(self, editor):
         super().__init__(editor)
         self.editor = editor
-        self.bg_color = QColor(245, 245, 245)
-        self.text_color = QColor(120, 120, 120)
+        self.bg_color = QColor(
+            DarkTheme.get_color("surface1")
+        )
+        self.text_color = QColor(
+            DarkTheme.get_color("overlay0")
+        )
 
     def sizeHint(self):
         return QSize(self.editor.line_number_area_width(), 0)
@@ -613,7 +940,7 @@ class LineNumberArea(QWidget):
                 painter.drawText(
                     0,
                     int(top),
-                    self.width() - 5,
+                    self.width() - 4,
                     self.editor.fontMetrics().height(),
                     Qt.AlignmentFlag.AlignRight,
                     str(block_num + 1),
@@ -629,7 +956,11 @@ class TextEditor(QPlainTextEdit):
         super().__init__()
         self.line_number_area = LineNumberArea(self)
         self.current_line_format = QTextCharFormat()
-        self.current_line_format.setBackground(QColor(255, 247, 213))
+        self.current_line_format.setBackground(
+            QColor(
+                DarkTheme.get_color("current_line")
+            )
+        )
 
         self.setup_connections()
         self._update_line_number_width(0)
@@ -1730,6 +2061,7 @@ if __name__ == "__main__":
         )
     )
     app = QApplication(sys.argv)
+    DarkTheme.apply_theme(app)
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
