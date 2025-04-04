@@ -336,6 +336,92 @@ class Branch:
         return self.edit_count < other.edit_count
 
 
+class Lexer:
+    TOKEN_REGEX = [
+        (r'\bconst\b', 'CONST'),
+        (r'\bi32\b', 'I32'),
+        (r':', 'COLON'),
+        (r'=', 'ASSIGN'),
+        (r'\+', 'PLUS'),
+        (r'-', 'MINUS'),
+        (r';', 'SEMICOLON'),
+        (r'[a-zA-Z_][a-zA-Z0-9_]*', 'IDENTIFIER'),
+        (r'\d+', 'NUMBER'),
+        (r'[^\s]', 'INVALID'),
+    ]
+
+    def __init__(self, input_text: str):
+        self.input_text = input_text
+        self.newline_positions = [
+            i for i, c in enumerate(input_text) if c == '\n'
+        ]
+        self.tokens = []
+        self.errors = []
+        self.pos = 0
+        self.length = len(input_text)
+
+    def get_line_column(
+        self,
+        pos: int
+    ) -> Tuple[int, int]:
+        line_num = bisect.bisect_right(
+            self.newline_positions,
+            pos
+        ) + 1
+        if line_num > 1:
+            column = pos - self.newline_positions[line_num-2]
+        else:
+            column = pos + 1
+        return line_num, column
+
+    def tokenize(self) -> Tuple[List[Token], List[LexerError]]:
+        while self.pos < self.length:
+            while (
+                self.pos < self.length
+                and self.input_text[self.pos].isspace()
+            ):
+                self.pos += 1
+            if self.pos >= self.length:
+                break
+
+            line, column = self.get_line_column(self.pos)
+            matched = False
+            for pattern, token_type in self.TOKEN_REGEX:
+                regex = re.compile(pattern)
+                match = regex.match(self.input_text, self.pos)
+                if match:
+                    value = match.group(0)
+                    if token_type in ('CONST', 'I32'):
+                        next_pos = match.end()
+                        if (
+                            next_pos < self.length
+                            and self.input_text[next_pos].isalnum()
+                        ):
+                            continue
+                    self.tokens.append(
+                        Token(
+                            token_type,
+                            value,
+                            line,
+                            column
+                        )
+                    )
+                    self.pos = match.end()
+                    matched = True
+                    break
+            if not matched:
+                char = self.input_text[self.pos]
+                self.errors.append(
+                    LexerError(
+                        line,
+                        column,
+                        f"Недопустимый символ: {repr(char)}"
+                    )
+                )
+                self.pos += 1
+        return self.tokens, self.errors
+
+
 class AdvancedLexer:
     MAX_EDIT_COUNT = 15
 
@@ -818,7 +904,7 @@ class SyntaxHighlighter(QSyntaxHighlighter):
         )
         self._add_rule(
             ["number", "string", "boolean", "object", "array", "void",
-             "any", "undefined", "symbol", "never", "type", "interface"],
+             "any", "undefined", "symbol", "never", "type", "i32"],
             QColor(
                 DarkTheme.get_color("syntax_type")
             ),
@@ -1840,15 +1926,17 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Анализ кода...")
         if doc := self.get_current_doc():
             input_text = doc.input_edit.toPlainText()
+            lexer_0 = Lexer(input_text)
+            lexeme, _ = lexer_0.tokenize()
             lexer = AdvancedLexer(input_text)
             _, lexer_errors = lexer.lex()
-            valid_tokens, validation_errors = lexer.validate_tokens()
+            _, validation_errors = lexer.validate_tokens()
             all_errors = lexer_errors + validation_errors
 
             doc.token_table.setRowCount(0)
-            doc.token_table.setRowCount(len(valid_tokens))
+            doc.token_table.setRowCount(len(lexeme))
 
-            for row, token in enumerate(valid_tokens):
+            for row, token in enumerate(lexeme):
                 line = token.line
                 start = token.column
                 end = start + len(token.value) - 1
